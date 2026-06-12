@@ -1,0 +1,25 @@
+name: solid_octo_guide
+description: Document conversion application.
+version: 1.0.0+1
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  archive: ^3.6.1
+  file_picker: ^8.1.2
+  google_fonts: ^6.2.1
+  path_provider: ^2.1.3
+  syncfusion_flutter_pdf: ^26.2.14
+  xml: ^6.5.0
+  share_plus: ^9.0.0
+  open_filex: ^4.5.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/fonts/
