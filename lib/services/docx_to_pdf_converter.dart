@@ -1549,6 +1549,36 @@ class DocxToPdfConverter {
 
     checkCancelled();
 
+    // ⚠️ إصلاح حقيقي (حجم الصفحة والهوامش الفعليان من w:sectPr مُهمَلان):
+    // كانت كل صفحة A4 (595×842) بهوامش 56.69pt ثابتة بصرف النظر عن
+    // w:pgSz/w:pgMar في المستند — فمستند Letter (612×792) بهوامش 1 بوصة كان
+    // يُرسَم بعرض وهوامش خاطئة، فيختلف عرض منطقة النص والتفاف الأسطر وعدد
+    // الصفحات والمحاذاة عن ناتج Word. نأخذ الأبعاد الرأسية (portrait) من
+    // sectPr مستوى body (flushSection يقلب W/H لأقسام landscape بنفسه).
+    double docPageW = _pageW, docPageH = _pageH;
+    double mTop = _marginTop, mBottom = _marginBottom;
+    double mLeft = _marginLeft, mRight = _marginRight;
+    final geomSect = body.findElements('w:sectPr').firstOrNull ??
+        body.findAllElements('w:sectPr').firstOrNull;
+    final pgSz = geomSect?.findElements('w:pgSz').firstOrNull;
+    if (pgSz != null) {
+      final w = int.tryParse(pgSz.getAttribute('w:w') ?? '');
+      final h = int.tryParse(pgSz.getAttribute('w:h') ?? '');
+      if (w != null && w > 0) docPageW = w / 20.0; // twips → points
+      if (h != null && h > 0) docPageH = h / 20.0;
+    }
+    final pgMar = geomSect?.findElements('w:pgMar').firstOrNull;
+    if (pgMar != null) {
+      final t = int.tryParse(pgMar.getAttribute('w:top') ?? '');
+      final b = int.tryParse(pgMar.getAttribute('w:bottom') ?? '');
+      final l = int.tryParse(pgMar.getAttribute('w:left') ?? '');
+      final r = int.tryParse(pgMar.getAttribute('w:right') ?? '');
+      if (t != null) mTop = t / 20.0;
+      if (b != null) mBottom = b / 20.0;
+      if (l != null) mLeft = l / 20.0;
+      if (r != null) mRight = r / 20.0;
+    }
+
     final spec = _mapBlocksToDocSpec(
       blocks: blocks,
       blockLandscape: blockLandscape,
@@ -1563,12 +1593,12 @@ class DocxToPdfConverter {
       defLatinKey: defLatinKey,
       decorations: decorations,
       footnoteMap: footnoteMap,
-      pageW: _pageW,
-      pageH: _pageH,
-      marginTop: _marginTop,
-      marginBottom: _marginBottom,
-      marginLeft: _marginLeft,
-      marginRight: _marginRight,
+      pageW: docPageW,
+      pageH: docPageH,
+      marginTop: mTop,
+      marginBottom: mBottom,
+      marginLeft: mLeft,
+      marginRight: mRight,
     );
 
     report(0.6, 'اكتمل تجهيز التخطيط');
