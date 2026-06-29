@@ -2311,6 +2311,47 @@ class DocxToPdfConverter {
     if (xml == null) return map;
     try {
       final doc = XmlDocument.parse(xml);
+
+      // ⚠️ إصلاح حقيقي (افتراضيات المستند الكلية <w:docDefaults> غائبة):
+      // Word يقرأ docDefaults في styles.xml لتحديد تباعد الفقرة الافتراضي
+      // (pPrDefault) وحجم الخط الافتراضي (rPrDefault) لكل فقرة/run لا تحمل
+      // قيماً صريحة ولا ترث من نمط. بدونها كنا نفرض 160 twips بعد و1.15 سطر
+      // و12pt دائماً — قيم لا تطابق غالبية القوالب (Calibri الحديث = 8pt بعد
+      // + 1.08 سطر + 11pt؛ قوالب عربية كثيرة تختلف). نخزّنها تحت مفتاح محجوز
+      // يقرؤه _parseParagraph/_parseRun كآخر fallback قبل القيم الصلبة.
+      final docDefaults = <String, String>{};
+      final ddElem = doc.findAllElements('w:docDefaults').firstOrNull;
+      if (ddElem != null) {
+        final pPrD = ddElem
+            .findAllElements('w:pPrDefault')
+            .firstOrNull
+            ?.findElements('w:pPr')
+            .firstOrNull;
+        final ddSpacing = pPrD?.findElements('w:spacing').firstOrNull;
+        if (ddSpacing != null) {
+          final sb = ddSpacing.getAttribute('w:before');
+          if (sb != null) docDefaults['spaceBefore'] = sb;
+          final sa = ddSpacing.getAttribute('w:after');
+          if (sa != null) docDefaults['spaceAfter'] = sa;
+          final sl = ddSpacing.getAttribute('w:line');
+          if (sl != null) docDefaults['spacingLine'] = sl;
+          final slr = ddSpacing.getAttribute('w:lineRule');
+          if (slr != null) docDefaults['spacingLineRule'] = slr;
+        }
+        final rPrD = ddElem
+            .findAllElements('w:rPrDefault')
+            .firstOrNull
+            ?.findElements('w:rPr')
+            .firstOrNull;
+        final ddSz =
+            rPrD?.findElements('w:sz').firstOrNull?.getAttribute('w:val');
+        if (ddSz != null) docDefaults['sz'] = ddSz;
+      }
+      if (docDefaults.isNotEmpty) map['__docDefaults__'] = docDefaults;
+
+      // basedOn لكل نمط — نحتفظ به لحل سلسلة الوراثة بعد تجميع كل الأنماط.
+      final basedOn = <String, String>{};
+
       for (final style in doc.findAllElements('w:style')) {
         final id = style.getAttribute('w:styleId');
         if (id == null) continue;
@@ -2320,10 +2361,12 @@ class DocxToPdfConverter {
         if (name != null) props['name'] = name.toLowerCase();
         final pPr = style.findElements('w:pPr').firstOrNull;
         if (pPr != null) {
-          props['jc'] =
-              pPr.findElements('w:jc').firstOrNull?.getAttribute('w:val') ?? '';
-          props['rtl'] =
-              pPr.findElements('w:bidi').firstOrNull != null ? 'true' : '';
+          final jc =
+              pPr.findElements('w:jc').firstOrNull?.getAttribute('w:val');
+          if (jc != null) props['jc'] = jc;
+          if (pPr.findElements('w:bidi').firstOrNull != null) {
+            props['rtl'] = 'true';
+          }
           final styleSpacing = pPr.findElements('w:spacing').firstOrNull;
           if (styleSpacing != null) {
             final sb = styleSpacing.getAttribute('w:before');
@@ -2347,7 +2390,27 @@ class DocxToPdfConverter {
               rPr.findElements('w:color').firstOrNull?.getAttribute('w:val');
           if (color != null && color != 'auto') props['color'] = color;
         }
+        final base =
+            style.findElements('w:basedOn').firstOrNull?.getAttribute('w:val');
+        if (base != null) basedOn[id] = base;
         map[id] = props;
+      }
+
+      // ⚠️ إصلاح حقيقي (وراثة الأنماط عبر w:basedOn مفقودة): نمط Heading
+      // مبني على Normal كان يفقد خطه وتباعده الموروثين لأن كل نمط كان يُقرأ
+      // منعزلاً. نملأ المفاتيح الناقصة في كل نمط من أسلافه صعوداً في السلسلة
+      // (مع حارس دورات)، باستثناء الاسم (خاص بكل نمط فلا يُورَّث).
+      for (final id in map.keys) {
+        if (id == '__docDefaults__') continue;
+        final seen = <String>{id};
+        var cur = basedOn[id];
+        while (cur != null && map.containsKey(cur) && seen.add(cur)) {
+          for (final e in map[cur]!.entries) {
+            if (e.key == 'name') continue;
+            map[id]!.putIfAbsent(e.key, () => e.value);
+          }
+          cur = basedOn[cur];
+        }
       }
     } catch (_) {}
     return map;
@@ -2486,15 +2549,21 @@ class DocxToPdfConverter {
         align = _Align.start;
     }
 
+    // ⚠️ docDefaults كآخر fallback (بعد الصريح ثم النمط) قبل القيم الصلبة.
+    final dd = styleMap['__docDefaults__'] ?? const <String, String>{};
     final spacing = pPr?.findElements('w:spacing').firstOrNull;
-    final rawBefore =
-        spacing?.getAttribute('w:before') ?? styleProps['spaceBefore'];
-    final rawAfter =
-        spacing?.getAttribute('w:after') ?? styleProps['spaceAfter'];
-    final rawLine =
-        spacing?.getAttribute('w:line') ?? styleProps['spacingLine'];
+    final rawBefore = spacing?.getAttribute('w:before') ??
+        styleProps['spaceBefore'] ??
+        dd['spaceBefore'];
+    final rawAfter = spacing?.getAttribute('w:after') ??
+        styleProps['spaceAfter'] ??
+        dd['spaceAfter'];
+    final rawLine = spacing?.getAttribute('w:line') ??
+        styleProps['spacingLine'] ??
+        dd['spacingLine'];
     final lineRule = spacing?.getAttribute('w:lineRule') ??
         styleProps['spacingLineRule'] ??
+        dd['spacingLineRule'] ??
         '';
     final spaceBefore = _twips(int.tryParse(rawBefore ?? '0') ?? 0);
     final spaceAfter = _twips(int.tryParse(rawAfter ?? '160') ?? 160);
@@ -2621,11 +2690,18 @@ class DocxToPdfConverter {
       }
     }
 
+    // ⚠️ إصلاح حقيقي (حجم الخط الافتراضي للمستند مُهمَل في الـ runs): عند
+    // غياب w:sz صريح وغياب sz في نمط الفقرة، _parseRun كان يفرض 12pt صلباً.
+    // نمرّر sz من docDefaults كـ fallback (دون تعديل خريطة النمط المشتركة).
+    final effStyleProps = (dd['sz'] != null && !styleProps.containsKey('sz'))
+        ? <String, String>{...styleProps, 'sz': dd['sz']!}
+        : styleProps;
+
     final runs = <_Run>[];
     for (final child in pElem.children.whereType<XmlElement>()) {
       if (child.localName == 'r') {
         final run =
-            _parseRun(child, styleProps, paraRtl, isHeading, headingLevel);
+            _parseRun(child, effStyleProps, paraRtl, isHeading, headingLevel);
         if (run != null) runs.add(run);
       } else if (child.localName == 'hyperlink') {
         // هدف الرابط: r:id (خارجي عبر rels) أو w:anchor (داخلي)
@@ -2633,7 +2709,8 @@ class DocxToPdfConverter {
         final anchor = child.getAttribute('w:anchor');
         final uri = (rId != null) ? relMap[rId] : null;
         for (final r in child.findElements('w:r')) {
-          final run = _parseRun(r, styleProps, paraRtl, isHeading, headingLevel,
+          final run = _parseRun(
+              r, effStyleProps, paraRtl, isHeading, headingLevel,
               isLink: true, linkUri: uri, linkAnchor: anchor);
           if (run != null) runs.add(run);
         }
