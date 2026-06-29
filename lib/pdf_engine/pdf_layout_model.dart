@@ -385,24 +385,24 @@ class PdfBlockChart extends PdfBlock {
 /// Linear gradient fill for a shape. Mirrors Kotlin Block.GradientFillSpec
 /// (parsed from the "gradient" map: positions / colors / vertical).
 class PdfGradientFill {
-  /// Color stop positions in 0..1, ascending. Must match [colors] length.
-  final List<double> positions;
+  /// Color stop positions in 0..1, ascending. Must match [stopColorsArgb].
+  final List<double> stopPositions;
 
-  /// ARGB colors, one per entry in [positions].
-  final List<int> colors;
+  /// ARGB colors, one per entry in [stopPositions].
+  final List<int> stopColorsArgb;
 
   /// true = top→bottom gradient, false = left→right.
   final bool vertical;
 
   const PdfGradientFill({
-    required this.positions,
-    required this.colors,
+    required this.stopPositions,
+    required this.stopColorsArgb,
     this.vertical = true,
   });
 
   Map<String, dynamic> toJson() => {
-        'positions': positions,
-        'colors': colors,
+        'positions': stopPositions,
+        'colors': stopColorsArgb,
         'vertical': vertical,
       };
 }
