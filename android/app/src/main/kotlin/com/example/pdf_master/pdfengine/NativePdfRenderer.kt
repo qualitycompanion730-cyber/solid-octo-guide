@@ -1284,7 +1284,10 @@ class NativePdfRenderer(private val context: Context) {
         // الأسطر) ونضيفهما يدوياً في drawLayoutLines للأسطر LTR فقط (RTL
         // يحسبه getLineRight ضمناً بصحة، فلا يُمَس). صفر للفقرات بلا بادئة.
         val leadingMarginFirstPx: Float = 0f,
-        val leadingMarginRestPx: Float = 0f
+        val leadingMarginRestPx: Float = 0f,
+        // مواضع الجدولة الكاملة (محاذاة + leader) لهذه الفقرة — يستهلكها
+        // مسار رسم الأسطر التي تحوي حرف tab لوضع النص بعد كل tab ورسم الـleader.
+        val tabStops: List<TabStopSpec> = emptyList()
     )
 
     private fun buildSpannedAndPaint(block: Block.Paragraph): Triple<CharSequence, TextPaint, List<FontRun>> {
@@ -1418,7 +1421,8 @@ class NativePdfRenderer(private val context: Context) {
         return MeasuredParagraph(
             layout, layout.height.toFloat(), text, paint, fontRuns,
             leadingMarginFirstPx = (indentStartPx + firstLineExtraPx).coerceAtLeast(0f),
-            leadingMarginRestPx = indentStartPx
+            leadingMarginRestPx = indentStartPx,
+            tabStops = block.tabStops
         )
     }
 
@@ -1503,7 +1507,7 @@ class NativePdfRenderer(private val context: Context) {
             val lineTopPx = layout.getLineTop(lineIdx)
             val ascentPx = (layout.getLineBaseline(lineIdx) - lineTopPx).toFloat()
 
-            val runs = bidiRunsForLine(measured.text, lineStart, lineEnd, lineIsRtl)
+            // (bidiRunsForLine يُحسب الآن داخل drawTextRange لكل نطاق على حدة.)
             // ⚠️ إصلاح حقيقي (تراكب رمز القائمة/المسافة البادئة مع نص
             // الفقرة في LTR): نعوّض الهامش البادئ الذي يُسقطه getLineLeft
             // لمحاذاة ALIGN_NORMAL (LTR) — انظر تعليق MeasuredParagraph
@@ -1522,8 +1526,13 @@ class NativePdfRenderer(private val context: Context) {
             val leadingMarginPx = if (paragraphIsLtr && isNormalAlign) {
                 if (lineIdx == 0) measured.leadingMarginFirstPx else measured.leadingMarginRestPx
             } else 0f
-            var cursorX = x + lineLeftPx + leadingMarginPx
-            for (run in runs) {
+            // ⚠️ مسار رسم نطاق نصي قابل لإعادة الاستخدام (للسطر كاملاً، ولكل
+            //    مقطع بين علامات الجدولة): يرسم [rangeStart, rangeEnd) ابتداءً
+            //    من startX بكامل منطق bidi/الخطوط/الزخارف/الروابط ويُعيد X
+            //    النهائي. الجسم أدناه لم يتغيّر؛ غُلِّف فقط في دالة محلية.
+            fun drawTextRange(rangeStart: Int, rangeEnd: Int, startX: Float): Float {
+                var cursorX = startX
+                for (run in bidiRunsForLine(measured.text, rangeStart, rangeEnd, lineIsRtl)) {
                 // نقسّم هذا الـbidi run إلى أجزاء فرعية متجانسة الخصائص
                 // (نفس FontSpec بالضبط)، ثم نعكس ترتيبها بصرياً إن كان
                 // الـrun اتجاهه RTL (انظر تعليق orderedSubRanges أدناه).
@@ -1622,7 +1631,105 @@ class NativePdfRenderer(private val context: Context) {
                     cursorX += advance
                 }
             }
+                return cursorX
+            }
+
+            // عرض نطاق نصي عبر مسار HarfBuzz نفسه (مجموع أجزاء الخطوط) —
+            // مستقل عن ترتيب bidi (العرض لا يتأثر بالاتجاه).
+            fun measureRangePx(rs: Int, re: Int): Float {
+                if (re <= rs) return 0f
+                var w = 0f
+                for (sub in splitRunByFontRuns(rs, re, measured.fontRuns)) {
+                    if (sub.end <= sub.start) continue
+                    w += ctx.cb.measureTextLine(
+                        measured.text, sub.start, sub.end, lineIsRtl,
+                        paintForFontRun(measured.paint, sub.font)
+                    )
+                }
+                return w
+            }
+
+            val cursorX0 = x + lineLeftPx + leadingMarginPx
+
+            // المسار الخاص بعلامات الجدولة يُفعَّل فقط لسطر يحوي حرف tab فعلاً
+            // ولديه مواضع جدولة — فالفقرات العادية لا تتأثر بتاتاً (صفر مخاطرة).
+            var lineHasTab = false
+            run {
+                var k = lineStart
+                while (k < lineEnd) {
+                    if (measured.text[k] == '\t') { lineHasTab = true; break }
+                    k++
+                }
+            }
+
+            if (!lineHasTab || measured.tabStops.isEmpty()) {
+                drawTextRange(lineStart, lineEnd, cursorX0)
+            } else {
+                // نقسّم السطر عند كل '\t'، ونضع كل مقطع تالٍ عند أقرب موضع
+                // جدولة بحسب محاذاته (يسار/يمين/وسط/عشري)، مع رسم نقاط الـleader
+                // في الفجوة (فهرس المحتويات/الفوتر). الهندسة موجَّهة LTR؛ مقاطع
+                // RTL تُرسم بمرجع مواضع من اليسار (تحسين لاحق إن لزم).
+                val segs = ArrayList<Pair<Int, Int>>()
+                run {
+                    var s = lineStart
+                    var k = lineStart
+                    while (k < lineEnd) {
+                        if (measured.text[k] == '\t') { segs.add(Pair(s, k)); s = k + 1 }
+                        k++
+                    }
+                    segs.add(Pair(s, lineEnd))
+                }
+                val tabOriginX = x
+                val defaultTabPx = 36f // ½ بوصة، المسافة الافتراضية
+                var cursorXt = drawTextRange(segs[0].first, segs[0].second, cursorX0)
+                for (si in 1 until segs.size) {
+                    val ss = segs[si].first
+                    val se = segs[si].second
+                    val stop = measured.tabStops.firstOrNull {
+                        (tabOriginX + it.posPt.toFloat()) > cursorXt + 0.5f
+                    }
+                    val segW = measureRangePx(ss, se)
+                    val stopX = if (stop != null) {
+                        tabOriginX + stop.posPt.toFloat()
+                    } else {
+                        tabOriginX + (Math.floor(
+                            ((cursorXt - tabOriginX) / defaultTabPx).toDouble()
+                        ).toFloat() + 1f) * defaultTabPx
+                    }
+                    val align = stop?.align ?: "left"
+                    var targetStart = when (align) {
+                        "right", "decimal" -> stopX - segW
+                        "center" -> stopX - segW / 2f
+                        else -> stopX
+                    }
+                    if (targetStart < cursorXt) targetStart = cursorXt // لا تراكب
+                    if (stop != null && stop.leader != "none" && targetStart > cursorXt + 1f) {
+                        drawTabLeader(ctx, measured.paint, cursorXt, targetStart, baselineCanvasY, stop.leader)
+                    }
+                    cursorXt = drawTextRange(ss, se, targetStart)
+                }
+            }
         }
+    }
+
+    /** يرسم نقاط (أو شرطات/شُرَط سفلية) الـleader بين [fromX, toX) على خط
+     *  الأساس baseY لملء فجوة الجدولة (نقاط فهرس المحتويات مثلاً). */
+    private fun drawTabLeader(
+        ctx: DrawCtx, paint: TextPaint, fromX: Float, toX: Float, baseY: Float, leader: String
+    ) {
+        val gap = toX - fromX
+        if (gap <= 2f) return
+        val ch = when (leader) {
+            "hyphen" -> "-"
+            "underscore" -> "_"
+            else -> "."
+        }
+        val unit = ctx.cb.measureTextLine(ch, 0, 1, false, paint)
+        if (unit <= 0.1f) return
+        val n = Math.floor(((gap - 2f) / unit).toDouble()).toInt()
+        if (n <= 0) return
+        val s = ch.repeat(n)
+        ctx.cb.drawTextLine(s, 0, s.length, fromX, ctx.pointY(baseY), false, paint, invisible = false)
     }
 
     /** يقسّم [start, end) إلى أجزاء فرعية متجانسة بحسب أول FontRun يطابق

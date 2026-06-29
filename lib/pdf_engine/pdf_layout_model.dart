@@ -17,6 +17,31 @@ enum PdfTextDirection { auto, ltr, rtl }
 
 enum PdfSuperSub { none, superscript, subscript }
 
+/// Tab stop alignment + leader. Mirrors OOXML w:tab (val + leader). The
+/// renderer uses this to position text after a tab character and draw the
+/// leader fill (e.g. the dotted line in a Table of Contents).
+enum PdfTabAlign { left, center, right, decimal }
+
+enum PdfTabLeader { none, dot, hyphen, underscore }
+
+class PdfTabStop {
+  final double posPt; // position from the paragraph's start margin, in points
+  final PdfTabAlign align;
+  final PdfTabLeader leader;
+
+  const PdfTabStop(
+    this.posPt, {
+    this.align = PdfTabAlign.left,
+    this.leader = PdfTabLeader.none,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'pos': posPt,
+        'align': align.name,
+        'leader': leader.name,
+      };
+}
+
 enum PdfShapeKind {
   rectangle,
   roundedRectangle,
@@ -145,6 +170,9 @@ class PdfBlockParagraph extends PdfBlock {
   final bool listOrdered;
   final String? listMarkerOverride;
   final List<double> tabStopsPt;
+  // Rich tab stops (alignment + leader). When non-empty this supersedes
+  // tabStopsPt; tabStopsPt is kept for simple left-only callers.
+  final List<PdfTabStop> tabStops;
   final List<String> footnotes;
   final String? bookmarkName;
 
@@ -161,6 +189,7 @@ class PdfBlockParagraph extends PdfBlock {
     this.listOrdered = false,
     this.listMarkerOverride,
     this.tabStopsPt = const [],
+    this.tabStops = const [],
     this.footnotes = const [],
     this.bookmarkName,
   });
@@ -179,7 +208,15 @@ class PdfBlockParagraph extends PdfBlock {
         if (listLevel != null) 'listLevel': listLevel,
         'listOrdered': listOrdered,
         if (listMarkerOverride != null) 'listMarker': listMarkerOverride,
-        if (tabStopsPt.isNotEmpty) 'tabStops': tabStopsPt,
+        // Emit rich tab stops when provided; otherwise fall back to the
+        // simple left-only positions (as left/no-leader objects).
+        if (tabStops.isNotEmpty)
+          'tabStops': tabStops.map((t) => t.toJson()).toList()
+        else if (tabStopsPt.isNotEmpty)
+          'tabStops': [
+            for (final p in tabStopsPt)
+              {'pos': p, 'align': 'left', 'leader': 'none'}
+          ],
         if (footnotes.isNotEmpty) 'footnotes': footnotes,
         if (bookmarkName != null) 'bookmarkName': bookmarkName,
       };

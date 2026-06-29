@@ -84,9 +84,12 @@ sealed class Block {
         val listLevel: Int?,
         val listOrdered: Boolean,
         val listMarker: String?,
-        /** مواضع جدولة بمحاذاة يسار فقط بالنقاط — انظر تعليق tabStopsPt في
-         *  pdf_layout_model.dart على الجهة Dart لتفصيل القيد. */
+        /** مواضع جدولة بمحاذاة يسار فقط بالنقاط (إبقاء للتوافق وقياس
+         *  StaticLayout عبر TabStopSpan.Standard). */
         val tabStopsPt: List<Double> = emptyList(),
+        /** مواضع الجدولة الكاملة (محاذاة + leader) — يستخدمها مسار الرسم
+         *  الجديد لدعم يمين/وسط/عشري ونقاط الـleader (فهرس المحتويات/الفوتر). */
+        val tabStops: List<TabStopSpec> = emptyList(),
         /** ⚠️ إصلاح حقيقي (موضع الهوامش): نصوص هوامش (footnotes) مرتبطة
          *  بهذه الفقرة تحديداً (الفقرة التي تحمل مرجع w:footnoteReference
          *  واحداً أو أكثر). كانت كل الهوامش تُجمَّع سابقاً في قسم منفصل
@@ -236,6 +239,13 @@ data class ChartSeriesModel(
      *  لها لونها الخاص بدل لون واحد للمتسلسلة كلها). إن وُجدت وكان طولها
      *  مطابقاً لـ values، تُستخدم بالأولوية على colorArgb لكل عنصر. */
     val perValueColors: List<Int>? = null
+)
+
+/** موقع جدولة كامل: الموضع بالنقاط من هامش بداية الفقرة + المحاذاة + الـleader. */
+data class TabStopSpec(
+    val posPt: Double,
+    val align: String, // left | center | right | decimal
+    val leader: String // none | dot | hyphen | underscore
 )
 
 data class PageBorderSpec(val widthPt: Double, val colorArgb: Int, val shadow: Boolean)
@@ -423,6 +433,22 @@ object PdfSpecParser {
             )
         }
         val tabStopsRaw = map["tabStops"] as? List<*>
+        // "tabStops" may be a list of numbers (legacy left-only) or a list of
+        // maps {pos, align, leader} (rich). Parse both robustly.
+        val richTabStops = tabStopsRaw?.mapNotNull { e ->
+            when (e) {
+                is Map<*, *> -> {
+                    val pos = (e["pos"] as? Number)?.toDouble() ?: return@mapNotNull null
+                    TabStopSpec(
+                        posPt = pos,
+                        align = e["align"] as? String ?: "left",
+                        leader = e["leader"] as? String ?: "none"
+                    )
+                }
+                is Number -> TabStopSpec(posPt = e.toDouble(), align = "left", leader = "none")
+                else -> null
+            }
+        } ?: emptyList()
         val footnotesRaw = map["footnotes"] as? List<*>
         return Block.Paragraph(
             runs = runs,
@@ -436,7 +462,8 @@ object PdfSpecParser {
             listLevel = (map["listLevel"] as? Number)?.toInt(),
             listOrdered = map["listOrdered"] as? Boolean ?: false,
             listMarker = map["listMarker"] as? String,
-            tabStopsPt = tabStopsRaw?.mapNotNull { (it as? Number)?.toDouble() } ?: emptyList(),
+            tabStopsPt = richTabStops.filter { it.align == "left" }.map { it.posPt },
+            tabStops = richTabStops,
             footnotes = footnotesRaw?.mapNotNull { it as? String } ?: emptyList(),
             // ⚠️ إضافة جديدة: انظر تعليق Block.Paragraph.bookmarkName أعلاه.
             bookmarkName = map["bookmarkName"] as? String

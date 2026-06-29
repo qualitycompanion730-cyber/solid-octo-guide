@@ -819,7 +819,8 @@ class _Paragraph {
 class _TabStop {
   final double pos;
   final String align; // left / center / right / decimal
-  const _TabStop(this.pos, this.align);
+  final String leader; // none / dot / hyphen / underscore
+  const _TabStop(this.pos, this.align, [this.leader = 'none']);
 }
 
 /// ⚠️ إصلاح حقيقي (حدود الخلايا الفردية المفقودة): يقابل w:tcBorders داخل
@@ -1749,12 +1750,39 @@ class DocxToPdfConverter {
               linkUri: r.linkUri, linkAnchor: r.linkAnchor))
           .toList();
       final marker = para.listType != null ? listMarker(para) : null;
-      // مواضع جدولة بمحاذاة يسار فقط (انظر قيد tabStopsPt في
-      // pdf_layout_model.dart)؛ نتجاهل مواضع وسط/يمين/عشري في v1 ونأخذ فقط
-      // left، لأن Android TabStopSpan لا يدعم غير محاذاة اليسار أصلاً.
+      // مواضع الجدولة الكاملة (يسار/يمين/وسط/عشري + leader). الرسم في
+      // NativePdfRenderer.kt يتولّى المحاذاة غير اليسارية ورسم الـleader
+      // (مثل نقاط فهرس المحتويات) — لم تعد مقصورة على left.
+      PdfTabAlign mapTabAlign(String a) {
+        switch (a) {
+          case 'right':
+            return PdfTabAlign.right;
+          case 'center':
+            return PdfTabAlign.center;
+          case 'decimal':
+            return PdfTabAlign.decimal;
+          default:
+            return PdfTabAlign.left;
+        }
+      }
+
+      PdfTabLeader mapTabLeader(String l) {
+        switch (l) {
+          case 'dot':
+            return PdfTabLeader.dot;
+          case 'hyphen':
+            return PdfTabLeader.hyphen;
+          case 'underscore':
+            return PdfTabLeader.underscore;
+          default:
+            return PdfTabLeader.none;
+        }
+      }
+
       final tabStops = [
         for (final ts in para.tabStops)
-          if (ts.align == 'left') ts.pos,
+          PdfTabStop(ts.pos,
+              align: mapTabAlign(ts.align), leader: mapTabLeader(ts.leader)),
       ];
       // ⚠️ إصلاح حقيقي (موضع الهوامش): نص كل هامش يخصّ هذه الفقرة فعلياً
       // (وُجد مرجعه ضمن أحد runs الفقرة) يُرفَق هنا بنصّه الكامل (لا فقط
@@ -1784,7 +1812,7 @@ class DocxToPdfConverter {
         listLevel: para.listType != null ? para.listLevel : null,
         listOrdered: para.listType == _ListType.numbered,
         listMarkerOverride: marker,
-        tabStopsPt: tabStops,
+        tabStops: tabStops,
         footnotes: footnoteTexts,
         bookmarkName: para.bookmarkName,
       );
@@ -2681,7 +2709,10 @@ class DocxToPdfConverter {
         if (val == 'clear') continue;
         final pos = int.tryParse(tb.getAttribute('w:pos') ?? '');
         if (pos == null) continue;
-        tabStops.add(_TabStop(_twips(pos), val));
+        // w:leader: none|dot|hyphen|underscore|middleDot (we map middleDot→dot)
+        var leader = tb.getAttribute('w:leader') ?? 'none';
+        if (leader == 'middleDot') leader = 'dot';
+        tabStops.add(_TabStop(_twips(pos), val, leader));
       }
       tabStops.sort((a, b) => a.pos.compareTo(b.pos));
     }
