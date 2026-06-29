@@ -382,6 +382,54 @@ class PdfBlockChart extends PdfBlock {
 
 // ── Shape block ────────────────────────────────────────────────────────────
 
+/// Linear gradient fill for a shape. Mirrors Kotlin Block.GradientFillSpec
+/// (parsed from the "gradient" map: positions / colors / vertical).
+class PdfGradientFill {
+  /// Color stop positions in 0..1, ascending. Must match [colors] length.
+  final List<double> positions;
+
+  /// ARGB colors, one per entry in [positions].
+  final List<int> colors;
+
+  /// true = top→bottom gradient, false = left→right.
+  final bool vertical;
+
+  const PdfGradientFill({
+    required this.positions,
+    required this.colors,
+    this.vertical = true,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'positions': positions,
+        'colors': colors,
+        'vertical': vertical,
+      };
+}
+
+/// Drop shadow for a shape. Mirrors Kotlin Block.ShadowSpec
+/// (parsed from the "shadow" map: blur / dx / dy / color).
+class PdfShadow {
+  final double blurRadiusPt;
+  final double offsetXPt;
+  final double offsetYPt;
+  final int colorArgb;
+
+  const PdfShadow({
+    this.blurRadiusPt = 4,
+    this.offsetXPt = 0,
+    this.offsetYPt = 0,
+    this.colorArgb = 0x59000000,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'blur': blurRadiusPt,
+        'dx': offsetXPt,
+        'dy': offsetYPt,
+        'color': colorArgb,
+      };
+}
+
 class PdfBlockShape extends PdfBlock {
   final PdfShapeKind kind;
   final double widthPt;
@@ -392,6 +440,8 @@ class PdfBlockShape extends PdfBlock {
   final double rotationDegrees;
   final bool flipHorizontal;
   final bool flipVertical;
+  final PdfGradientFill? gradientFill;
+  final PdfShadow? shadow;
 
   const PdfBlockShape({
     required this.kind,
@@ -403,6 +453,8 @@ class PdfBlockShape extends PdfBlock {
     this.rotationDegrees = 0,
     this.flipHorizontal = false,
     this.flipVertical = false,
+    this.gradientFill,
+    this.shadow,
   });
 
   @override
@@ -417,6 +469,8 @@ class PdfBlockShape extends PdfBlock {
         if (rotationDegrees != 0) 'rotation': rotationDegrees,
         if (flipHorizontal) 'flipH': true,
         if (flipVertical) 'flipV': true,
+        if (gradientFill != null) 'gradient': gradientFill!.toJson(),
+        if (shadow != null) 'shadow': shadow!.toJson(),
       };
 }
 
@@ -555,10 +609,14 @@ class PdfPageSpec {
   const PdfPageSpec({
     required this.widthPt,
     required this.heightPt,
-    required this.marginTopPt,
-    required this.marginBottomPt,
-    required this.marginLeftPt,
-    required this.marginRightPt,
+    // Margins are optional and default to 0 — matching the Kotlin parser
+    // (PdfSpecParser reads marginTop/Bottom/Left/Right with `?: 0.0`). Callers
+    // that lay out full-bleed pages (e.g. image-only / searchable-OCR PDFs)
+    // can omit them; the DOCX converter always passes explicit values.
+    this.marginTopPt = 0,
+    this.marginBottomPt = 0,
+    this.marginLeftPt = 0,
+    this.marginRightPt = 0,
     required this.blocks,
     this.backgroundColorArgb,
     this.backgroundImageBytes,
