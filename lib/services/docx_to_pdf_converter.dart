@@ -2346,6 +2346,16 @@ class DocxToPdfConverter {
         final ddSz =
             rPrD?.findElements('w:sz').firstOrNull?.getAttribute('w:val');
         if (ddSz != null) docDefaults['sz'] = ddSz;
+        // ⚠️ إصلاح حقيقي (الخط الافتراضي للمستند مُهمَل): rPrDefault/rFonts
+        // يحدّد عائلة الخط الافتراضية (مثلاً Arial) لكل run بلا rFonts صريحة
+        // ولا نمط يعرّفها. بدونه كان النص اللاتيني يقع دوماً على Carlito
+        // (بديل Calibri) بصرف النظر عن خط المستند الفعلي.
+        final ddFonts = rPrD?.findElements('w:rFonts').firstOrNull;
+        final ddAscii = ddFonts?.getAttribute('w:ascii') ??
+            ddFonts?.getAttribute('w:hAnsi');
+        if (ddAscii != null) docDefaults['font'] = ddAscii;
+        final ddCs = ddFonts?.getAttribute('w:cs');
+        if (ddCs != null) docDefaults['fontCs'] = ddCs;
       }
       if (docDefaults.isNotEmpty) map['__docDefaults__'] = docDefaults;
 
@@ -2389,6 +2399,15 @@ class DocxToPdfConverter {
           final color =
               rPr.findElements('w:color').firstOrNull?.getAttribute('w:val');
           if (color != null && color != 'auto') props['color'] = color;
+          // ⚠️ rFonts على مستوى النمط — يُورَّث عبر basedOn ويُستهلَك في
+          // _parseRun كـ styleProps['font']/['fontCs']. كان مفقوداً كلياً،
+          // فأنماط مثل Heading التي تحدّد Arial لم يكن خطها يصل للناتج.
+          final sFonts = rPr.findElements('w:rFonts').firstOrNull;
+          final sAscii = sFonts?.getAttribute('w:ascii') ??
+              sFonts?.getAttribute('w:hAnsi');
+          if (sAscii != null) props['font'] = sAscii;
+          final sCs = sFonts?.getAttribute('w:cs');
+          if (sCs != null) props['fontCs'] = sCs;
         }
         final base =
             style.findElements('w:basedOn').firstOrNull?.getAttribute('w:val');
@@ -2693,9 +2712,17 @@ class DocxToPdfConverter {
     // ⚠️ إصلاح حقيقي (حجم الخط الافتراضي للمستند مُهمَل في الـ runs): عند
     // غياب w:sz صريح وغياب sz في نمط الفقرة، _parseRun كان يفرض 12pt صلباً.
     // نمرّر sz من docDefaults كـ fallback (دون تعديل خريطة النمط المشتركة).
-    final effStyleProps = (dd['sz'] != null && !styleProps.containsKey('sz'))
-        ? <String, String>{...styleProps, 'sz': dd['sz']!}
-        : styleProps;
+    var effStyleProps = styleProps;
+    void ddFallback(String key) {
+      final v = dd[key];
+      if (v != null && !effStyleProps.containsKey(key)) {
+        effStyleProps = <String, String>{...effStyleProps, key: v};
+      }
+    }
+
+    ddFallback('sz');
+    ddFallback('font'); // عائلة الخط اللاتيني الافتراضية للمستند
+    ddFallback('fontCs'); // عائلة الخط العربي/المعقّد الافتراضية للمستند
 
     final runs = <_Run>[];
     for (final child in pElem.children.whereType<XmlElement>()) {
